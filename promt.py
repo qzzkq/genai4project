@@ -4,15 +4,16 @@ from typing import List, Dict, Any, Optional
 import json
 
 from openai import OpenAI
+from main import evaluate_ad  # импортируем оценщик из main.py
 
 
-# =====================
+# ==========================
 # 1. SYSTEM PROMPT
-# =====================
+# ==========================
 
 SYSTEM_PROMPT = """
-Ты — модуль генерации рекламных креативов для ИИ-платформы GENAI-4.  
-Твоя задача — создавать эффективные рекламные тексты для интернет-магазина электроники, адаптированные под разные каналы (Telegram, VK, Yandex Ads).  
+Ты — модуль генерации рекламных креативов для ИИ-платформы GENAI-4.
+Твоя задача — создавать эффективные рекламные тексты для интернет-магазина электроники, адаптированные под разные каналы (Telegram, VK, Yandex Ads).
 Сосредоточься на конверсии (кликах и покупках). Не используй лишнего текста, только то, что помогает продавать.
 
 =====================
@@ -22,12 +23,12 @@ SYSTEM_PROMPT = """
 2. Формируй тексты современно, понятно, без канцелярита.
 3. Не придумывай технических характеристик, которых нет во входных данных.
 4. Подчеркивай выгоды товара, а не только параметры.
-5. Учитывай тренды маркетинга:  
-   - "минимализм" → краткость, сухая подача выгоды  
-   - "FOMO" → ограниченность, «успей», «мало осталось»  
-   - "честность" → без преувеличений  
-   - "социальное доказательство" → популярность, отзывы  
-   - "юмор" → легкий, не кринж  
+5. Учитывай тренды маркетинга:
+   - "минимализм" → краткость, сухая подача выгоды
+   - "FOMO" → ограниченность, «успей», «мало осталось»
+   - "честность" → без преувеличений
+   - "социальное доказательство" → популярность, отзывы
+   - "юмор" → легкий, не кринж
 6. Строго соблюдай требования канала (см. ниже).
 7. Отвечай ТОЛЬКО JSON-структурой, без текста вне JSON.
 
@@ -125,7 +126,7 @@ notes: причина высокой конверсии.
 
 
 # ==========================
-# 2. DATA-MODEL
+# 2. DATA-MODEL (структуры данных)
 # ==========================
 
 @dataclass
@@ -149,7 +150,7 @@ class AudienceProfile:
 class GenerationRequest:
     product: Product
     audience_profile: AudienceProfile
-    channel: str
+    channel: str               # "telegram" | "vk" | "yandex_ads"
     trends: List[str]
     n_variants: int = 1
 
@@ -164,7 +165,7 @@ class AdVariant:
 
 
 # ==========================
-# 3. LLM CLIENT (исправлено здесь)
+# 3. LLM CLIENT (отдельный слой)
 # ==========================
 
 class LLMClient:
@@ -177,6 +178,9 @@ class LLMClient:
         self.model = model
 
     def generate_variants(self, payload: Dict[str, Any]) -> List[AdVariant]:
+        """
+        Отправляем SYSTEM_PROMPT + payload (JSON) и получаем список AdVariant.
+        """
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -204,10 +208,14 @@ class LLMClient:
 
 
 # ==========================
-# 4. BUILDERS
+# 4. BUILDERS (подготовка входных данных для LLM)
 # ==========================
 
 def build_payload_from_request(req: GenerationRequest) -> Dict[str, Any]:
+    """
+    Превращает наш internal-объект GenerationRequest в JSON для LLM.
+    Это изолирует формат, можно легко менять.
+    """
     return {
         "product": {
             "name": req.product.name,
@@ -229,6 +237,18 @@ def build_payload_from_request(req: GenerationRequest) -> Dict[str, Any]:
 
 
 def build_request_from_input_json(input_json: Dict[str, Any]) -> GenerationRequest:
+    """
+    Строим GenerationRequest из "сырого" JSON, который к тебе прилетает
+    от предыдущего модуля (каталог/анализ).
+    Ожидается структура:
+    {
+      "product": {...},
+      "audience_profile": {...},
+      "channel": "...",
+      "trends": [...],
+      "n_variants": 1
+    }
+    """
     p = input_json["product"]
     a = input_json["audience_profile"]
 
@@ -247,20 +267,24 @@ def build_request_from_input_json(input_json: Dict[str, Any]) -> GenerationReque
         behavior=a.get("behavior", []),
     )
 
-    return GenerationRequest(
+    req = GenerationRequest(
         product=product,
         audience_profile=audience,
         channel=input_json["channel"],
         trends=input_json.get("trends", []),
         n_variants=input_json.get("n_variants", 1),
     )
+    return req
 
 
 # ==========================
-# 5. FORMATTERS
+# 5. FORMATTERS (человекочитаемый текст)
 # ==========================
 
 def format_variant_for_channel(variant: AdVariant) -> str:
+    """
+    Один форматтер — внутри уже разные ветки по каналам.
+    """
     ch = variant.channel.lower()
 
     if ch == "telegram":
@@ -294,14 +318,24 @@ def format_variant_for_channel(variant: AdVariant) -> str:
 
 
 def format_all_variants_human_readable(variants: List[AdVariant]) -> List[str]:
+    """
+    На вход — список вариантов от модели,
+    на выход — список готовых текстов для интерфейса/логирования.
+    """
     return [format_variant_for_channel(v) for v in variants]
 
 
 # ==========================
-# 6. FACADE
+# 6. FACADE (одна точка входа для всего твоего модуля)
 # ==========================
 
 class AdGenerator:
+    """
+    Высокоуровневый класс: принимает сырые JSON-данные, возвращает:
+    - структурированные варианты
+    - и/или тексты объявлений
+    """
+
     def __init__(self, llm_client: LLMClient):
         self.llm_client = llm_client
 
@@ -310,7 +344,13 @@ class AdGenerator:
         input_json: Dict[str, Any],
         return_human_texts: bool = True,
     ) -> Dict[str, Any]:
-
+        """
+        Основной метод:
+        - input_json: то, что тебе кидают другие части системы (каталог/симуляция).
+        Возвращает dict:
+            "variants": List[AdVariant как dict]
+            "texts": List[str] (если return_human_texts=True)
+        """
         req = build_request_from_input_json(input_json)
         payload = build_payload_from_request(req)
 
@@ -337,21 +377,97 @@ class AdGenerator:
 
 
 # ==========================
-# 7. MAIN
+# 7. ОПТИМИЗАЦИЯ РЕКЛАМЫ ЧЕРЕЗ main.evaluate_ad
+# ==========================
+
+BEST_CLICK_THRESHOLD = 0.7   # порог "достаточно хорошей" вероятности клика
+MAX_ITERS = 3                # максимум итераций улучшения
+
+
+def generate_and_optimize_ad(
+    generator: AdGenerator,
+    input_json: Dict[str, Any],
+    target_audience: str,
+    best_click_threshold: float = BEST_CLICK_THRESHOLD,
+    max_iters: int = MAX_ITERS,
+) -> Dict[str, Any]:
+    """
+    1) Генерирует варианты рекламы через AdGenerator.
+    2) Для каждого варианта вызывает main.evaluate_ad(ad_text, target_audience).
+    3) Выбирает лучший вариант по click_probability.
+    4) Если на какой-то итерации найден вариант с click_probability >= порога —
+       сразу возвращаем его.
+
+    Возвращает dict:
+    {
+      "ad_text": "...",
+      "variant": {...},
+      "scores": {"click_probability": ..., "purchase_probability": ...}
+    }
+    """
+    best_variant: Optional[Dict[str, Any]] = None
+    best_scores: Optional[Dict[str, float]] = None
+
+    for _ in range(max_iters):
+        result = generator.generate_from_json_dict(input_json, return_human_texts=False)
+        variants = result["variants"]
+
+        for v in variants:
+            # Собираем текст объявления (заголовок + текст + CTA)
+            ad_text = f"{v['headline']}\n{v['text']}\n{v['cta']}"
+
+            # Оцениваем рекламу через main.evaluate_ad
+            scores = evaluate_ad(ad_text, target_audience)
+            click_p = scores.get("click_probability", 0.0)
+
+            # Обновляем лучший, если нужно
+            if best_scores is None or click_p > best_scores.get("click_probability", 0.0):
+                best_scores = scores
+                best_variant = v
+
+            # Если вариант достаточно хорош — сразу возвращаем
+            if click_p >= best_click_threshold:
+                return {
+                    "ad_text": ad_text,
+                    "variant": v,
+                    "scores": scores,
+                }
+
+    # Если порог так и не достигнут — возвращаем лучший из того, что было
+    if best_variant is not None and best_scores is not None:
+        ad_text = f"{best_variant['headline']}\n{best_variant['text']}\n{best_variant['cta']}"
+        return {
+            "ad_text": ad_text,
+            "variant": best_variant,
+            "scores": best_scores,
+        }
+
+    raise RuntimeError("Не удалось сгенерировать ни одного варианта рекламы")
+
+
+# ==========================
+# 8. MAIN (запуск для проверки)
 # ==========================
 
 if __name__ == "__main__":
+    # 1. Путь к JSON с товаром
     JSON_FILE = "input/product_2.json"
 
+    # 2. Загружаем JSON
     with open(JSON_FILE, "r", encoding="utf-8") as f:
         example_input = json.load(f)
 
+    # 3. Инициализируем клиента LLM
     llm_client = LLMClient(api_key="YOUR_API_KEY_HERE")
     generator = AdGenerator(llm_client)
 
-    result = generator.generate_from_json_dict(example_input, return_human_texts=True)
+    # 4. Генерируем и оптимизируем рекламу для конкретной аудитории
+    result = generate_and_optimize_ad(
+        generator,
+        example_input,
+        target_audience="Low_income_pragmatic_youth",
+    )
 
-    print("=== ЧЕЛОВЕКОЧИТАЕМЫЕ ТЕКСТЫ ===")
-    for t in result["texts"]:
-        print(t)
-        print("-" * 40)
+    print("=== ЛУЧШИЙ ВАРИАНТ ===")
+    print(result["ad_text"])
+    print("Оценка:", result["scores"])
