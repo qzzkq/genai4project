@@ -1,0 +1,16 @@
+[
+  {
+    "category": "Коллекции",
+    "name": "Labubu The Monsters",
+    "description": "Красивая игрушка, хороший подарок.",
+    "price": 5500,
+    "market_cost": 1500
+  },
+  {
+    "category": "Напитки",
+    "name": "Энергетик Lit Energy",
+    "description": "Приятный энергетик. Новинка.",
+    "price": 200,
+    "market_cost": 60
+  }
+]
